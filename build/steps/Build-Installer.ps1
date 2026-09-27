@@ -57,6 +57,23 @@ finally {
 }
 
 $setup = Get-NvmInstallerSetupPath -Version $version -Architecture $Architecture -DistRoot $ctx.DistRoot
+$archToken = Get-NvmReleaseArchToken -Architecture $Architecture
+$newest = Get-ChildItem -LiteralPath $ctx.DistRoot -Filter ("nvm-{0}-{1}-setup*.exe" -f $version, $archToken) -ErrorAction SilentlyContinue |
+	Sort-Object LastWriteTimeUtc -Descending |
+	Select-Object -First 1
+if ($null -ne $newest) {
+	if ($newest.FullName -ne $setup) {
+		Write-Warning ("Canonical setup was locked or stale. Newest build -> {0}" -f $newest.FullName)
+		try {
+			Copy-Item -LiteralPath $newest.FullName -Destination $setup -Force
+			Write-Host "Replaced canonical setup -> $setup"
+		}
+		catch {
+			Write-Warning ("Could not replace {0}. Run the timestamped file instead." -f $setup)
+			$setup = $newest.FullName
+		}
+	}
+}
 Assert-NvmFile -Path $setup -Label "Inno Setup installer"
 Write-Host "Installer ready -> $setup"
 return $setup

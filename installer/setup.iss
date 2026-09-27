@@ -71,8 +71,15 @@ AppPublisher={#Publisher}
 AppPublisherURL={#URL}
 AppSupportURL={#URL}
 AppUpdatesURL={#URL}
-ArchitecturesAllowed=x64compatible
+; Refuse amd64 installer on native ARM64 (Prism) and arm64 installer on x64.
+; x64compatible alone allows ARM64 Windows to run the amd64 setup under emulation.
+#if Architecture == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
+ArchitecturesAllowed=x64compatible and not arm64
 ArchitecturesInstallIn64BitMode=x64compatible
+#endif
 DefaultDirName={localappdata}\{#OrgLabel}\{#Alias}
 UsePreviousAppDir=no
 LicenseFile={#ProjectRoot}\LICENSE
@@ -101,7 +108,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
 WelcomeLabel1=[name] Setup Wizard
+ReadyLabel2b=
 UninstalledMost=%1 was successfully removed from your computer.
+#if Architecture == "arm64"
+WindowsVersionNotSupported=This NVM for Windows installer is built for ARM64. This computer is not native ARM64.%n%nDownload the amd64 (x64) installer instead, then try again.
+#else
+WindowsVersionNotSupported=This NVM for Windows installer is built for amd64 (x64). This computer appears to be ARM64 or another unsupported architecture.%n%nDownload the ARM64 installer instead, then try again.
+#endif
 
 [Registry]
 ; Register nvm protocol
@@ -217,6 +230,24 @@ var
   SilentForcedAppDataFrom: String;
   RuntimeACLDegraded: Boolean;
   ShimFinalizeIncomplete: Boolean;
+  OfficialNodePage: TInputOptionWizardPage;
+  OfficialNodeDetected: Boolean;
+  OfficialNodePath: String;
+  OfficialNodeVersion: String;
+  OfficialNodeProductCode: String;
+  OfficialNodeUninstallString: String;
+  OfficialNodeIsMsi: Boolean;
+  OfficialNodeModuleCount: Integer;
+  OfficialNodeModuleSize: Int64;
+  OfficialNodeAction: String;
+  OfficialNodeCopyFailed: Boolean;
+  OfficialNodeDropFailed: Boolean;
+  OfficialNodeDropError: String;
+  ReadyEventNote: TNewStaticText;
+  ReadySummaryTop: TNewStaticText;
+  ReadyPrefCheck: array[0..4] of TNewCheckBox;
+  ReadySummaryBottom: TNewStaticText;
+  ReadySummaryCertified: TNewLinkLabel;
 
 const
   WM_SETTINGCHANGE = $001A;
@@ -1905,6 +1936,8 @@ begin
   AppendInstallLog('CopyTreeWithProgress completed');
 end;
 
+#include "officialnode.iss"
+
 procedure MigrateNodeStorageIfNeeded();
 var
   ExistingRoot: String;
@@ -2221,6 +2254,177 @@ begin
     EmailEdit.Text := EmailPlaceholder;
 end;
 
+procedure ReadyCertifiedLinkClick(Sender: TObject; const Link: String; LinkType: TSysLinkType); forward;
+
+function GetReadyAnnouncementEmail(): String;
+begin
+  if (EmailEdit <> nil) and (Trim(EmailEdit.Text) <> '') and (Trim(EmailEdit.Text) <> EmailPlaceholder) then
+    Result := Trim(EmailEdit.Text)
+  else
+    Result := 'Not provided';
+end;
+
+procedure LayoutReadySummaryControls();
+var
+  Y: Integer;
+  I: Integer;
+  InnerWidth: Integer;
+  LeftPos: Integer;
+  AreaTop: Integer;
+begin
+  if (ReadyEventNote = nil) or (ReadySummaryTop = nil) then
+    Exit;
+
+  AreaTop := WizardForm.ReadyLabel.Top;
+  LeftPos := WizardForm.ReadyMemo.Left;
+  InnerWidth := WizardForm.ReadyMemo.Width;
+  if InnerWidth < ScaleX(200) then
+    InnerWidth := ScaleX(200);
+
+  ReadyEventNote.Left := LeftPos;
+  ReadyEventNote.Top := AreaTop;
+  ReadyEventNote.Width := InnerWidth;
+  Y := ReadyEventNote.Top + ReadyEventNote.Height + ScaleY(8);
+
+  ReadySummaryTop.Left := LeftPos;
+  ReadySummaryTop.Top := Y;
+  ReadySummaryTop.Width := InnerWidth;
+  Y := ReadySummaryTop.Top + ReadySummaryTop.Height + ScaleY(6);
+
+  for I := 0 to 4 do
+  begin
+    ReadyPrefCheck[I].Left := LeftPos;
+    ReadyPrefCheck[I].Width := InnerWidth;
+    ReadyPrefCheck[I].Top := Y;
+    Y := Y + ReadyPrefCheck[I].Height + ScaleY(1);
+  end;
+
+  ReadySummaryBottom.Left := LeftPos;
+  ReadySummaryBottom.Top := Y + ScaleY(8);
+  ReadySummaryBottom.Width := InnerWidth;
+  ReadySummaryCertified.Left := LeftPos;
+  ReadySummaryCertified.Top := ReadySummaryBottom.Top + ReadySummaryBottom.Height + ScaleY(12);
+  ReadySummaryCertified.Width := InnerWidth;
+end;
+
+procedure RefreshReadySummary();
+var
+  Mode: String;
+  SummaryText: String;
+  I: Integer;
+begin
+  if (ReadyEventNote = nil) or (ReadySummaryTop = nil) then
+    Exit;
+
+  ReadyEventNote.Width := WizardForm.ReadyMemo.Width;
+  ReadySummaryTop.Width := WizardForm.ReadyMemo.Width;
+  ReadySummaryBottom.Width := WizardForm.ReadyMemo.Width;
+  ReadySummaryCertified.Width := WizardForm.ReadyMemo.Width;
+
+  ReadyEventNote.Caption :=
+    'You may be prompted to allow NVM for Windows to register as a Windows event source.';
+
+  if (OperatingModePage <> nil) and OperatingModePage.Values[1] then
+    Mode := 'Link'
+  else
+    Mode := 'Shim (recommended)';
+
+  SummaryText :=
+    'NVM for Windows will be installed with the following settings:' + #13#10 + #13#10 +
+    'Node.js storage: ' + GetInstallRoot('') + #13#10 +
+    'Operating mode: ' + Mode + #13#10 +
+    'Announcements email: ' + GetReadyAnnouncementEmail();
+
+  if IsPreV2Upgrade then
+    SummaryText := SummaryText + #13#10 + #13#10 +
+      'A prior NVM for Windows installation was detected. Your settings and Node.js versions will be migrated.';
+
+  if OfficialNodeDetected then
+    SummaryText := SummaryText + #13#10 + #13#10 +
+      OfficialNodeSummary() + #13#10 +
+      'Official Node.js action: ' + SelectedOfficialNodeAction() + #13#10 +
+      'Official Node.js path: ' + OfficialNodePath;
+
+  ReadySummaryTop.Caption := SummaryText;
+
+  if PreferencesPage <> nil then
+  begin
+    for I := 0 to 4 do
+      ReadyPrefCheck[I].Checked := PreferencesPage.Values[I];
+  end;
+
+  ReadySummaryBottom.Caption :=
+    'Community builds install in the per-user LocalAppData folder.';
+  ReadySummaryCertified.Caption :=
+    'For IT-managed Program Files installations, MSI, or Intune deployment, use <a href="https://nvm-windows.com/certified">Certified Builds</a>.';
+
+  LayoutReadySummaryControls();
+end;
+
+procedure ReadyCertifiedLinkClick(Sender: TObject; const Link: String; LinkType: TSysLinkType);
+var
+  ResultCode: Integer;
+begin
+  if Trim(Link) = '' then
+    Exit;
+  ShellExec('open', Link, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+end;
+
+procedure CreateReadySummaryControls();
+var
+  Host: TWinControl;
+  I: Integer;
+begin
+  WizardForm.ReadyLabel.Visible := False;
+  WizardForm.ReadyMemo.Visible := False;
+  WizardForm.ReadyMemo.ScrollBars := ssVertical;
+  WizardForm.ReadyMemo.WordWrap := True;
+
+  Host := WizardForm.ReadyMemo.Parent;
+
+  ReadyEventNote := TNewStaticText.Create(WizardForm);
+  ReadyEventNote.Parent := Host;
+  ReadyEventNote.AutoSize := True;
+  ReadyEventNote.WordWrap := True;
+  ReadyEventNote.Color := $00CCFFFF;
+  ReadyEventNote.Font.Style := [fsBold];
+  ReadyEventNote.Caption := '';
+
+  ReadySummaryTop := TNewStaticText.Create(WizardForm);
+  ReadySummaryTop.Parent := Host;
+  ReadySummaryTop.AutoSize := True;
+  ReadySummaryTop.WordWrap := True;
+  ReadySummaryTop.Caption := '';
+
+  for I := 0 to 4 do
+  begin
+    ReadyPrefCheck[I] := TNewCheckBox.Create(WizardForm);
+    ReadyPrefCheck[I].Parent := Host;
+    ReadyPrefCheck[I].Height := ScaleY(18);
+    ReadyPrefCheck[I].Enabled := False;
+    ReadyPrefCheck[I].TabStop := False;
+  end;
+  ReadyPrefCheck[0].Caption := 'Keep downloaded Node.js setup files (cache for reinstall)';
+  ReadyPrefCheck[1].Caption := 'Auto-detect Node.js version, e.g. .nvmrc, .node-version, package.json';
+  ReadyPrefCheck[2].Caption := 'Auto-install missing Node.js versions';
+  ReadyPrefCheck[3].Caption := 'Prompt before installing';
+  ReadyPrefCheck[4].Caption := 'Validate TLS/SSL certificates';
+
+  ReadySummaryBottom := TNewStaticText.Create(WizardForm);
+  ReadySummaryBottom.Parent := Host;
+  ReadySummaryBottom.AutoSize := True;
+  ReadySummaryBottom.WordWrap := True;
+  ReadySummaryBottom.Font.Style := [fsBold];
+  ReadySummaryBottom.Caption := '';
+
+  ReadySummaryCertified := TNewLinkLabel.Create(WizardForm);
+  ReadySummaryCertified.Parent := Host;
+  ReadySummaryCertified.AutoSize := True;
+  ReadySummaryCertified.Font.Style := [fsBold];
+  ReadySummaryCertified.OnLinkClick := @ReadyCertifiedLinkClick;
+  ReadySummaryCertified.Caption := '';
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if (EmailPage <> nil) and (CurPageID = EmailPage.ID) then
@@ -2229,6 +2433,9 @@ begin
   if (StoragePermissionsPage <> nil) and (CurPageID = StoragePermissionsPage.ID) and
      (StoragePermissionsPathLabel <> nil) then
     StoragePermissionsPathLabel.Caption := 'Selected path:' + #13#10 + GetInstallRoot('');
+
+  if CurPageID = wpReady then
+    RefreshReadySummary();
 end;
 
 function DefaultAppDataInstallRoot(): String;
@@ -2275,6 +2482,11 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+  if (OfficialNodePage <> nil) and (PageID = OfficialNodePage.ID) then
+  begin
+    Result := WizardSilent or (not OfficialNodeDetected);
+    Exit;
+  end;
   if (StoragePermissionsPage <> nil) and (PageID = StoragePermissionsPage.ID) then
   begin
     if WizardSilent then
@@ -2528,6 +2740,31 @@ begin
   UpdateAutoInstallPromptState();
 end;
 
+function IsBuildArchitectureCompatible(): Boolean;
+begin
+  { Native OS arch must match the binaries in this setup (not the emulated process arch). }
+#if Architecture == "arm64"
+  Result := IsArm64;
+#else
+  Result := IsX64Compatible and (not IsArm64);
+#endif
+end;
+
+function ArchitectureMismatchMessage(): String;
+begin
+#if Architecture == "arm64"
+  Result :=
+    'This NVM for Windows installer is built for ARM64.' + #13#10#13#10 +
+    'This computer is not native ARM64.' + #13#10#13#10 +
+    'Download the amd64 (x64) installer instead, then try again.';
+#else
+  Result :=
+    'This NVM for Windows installer is built for amd64 (x64).' + #13#10#13#10 +
+    'This computer appears to be ARM64 or another unsupported architecture.' + #13#10#13#10 +
+    'Download the ARM64 installer instead, then try again.';
+#endif
+end;
+
 function InitializeSetup(): Boolean;
 var
   ExistingVersion: String;
@@ -2542,6 +2779,14 @@ begin
   RemoveLegacyTasks := False;
   IsPreV2Upgrade := False;
   IsConcreteLegacyUpgrade := False;
+
+  if not IsBuildArchitectureCompatible() then
+  begin
+    MsgBox(ArchitectureMismatchMessage(), mbCriticalError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
   ResetWizardDefaults();
   LegacyInstallDir := Trim(GetEnv('NVM_HOME'));
   LoadLegacySettings();
@@ -2751,6 +2996,19 @@ begin
   if not ForceProgramRootDirectory then
     Abort;
 
+  DetectOfficialNode();
+  CreateOfficialNodePage();
+
+  if OfficialNodePage <> nil then
+    NodeStoragePage := CreateInputDirPage(
+      OfficialNodePage.ID,
+      'Node.js Storage Location',
+      'Select where Node.js versions will be stored.',
+      'NVM for Windows will store Node.js and npm installations in this directory.',
+      False,
+      ''
+    )
+  else
   NodeStoragePage := CreateInputDirPage(
     wpLicense,
     'Node.js Storage Location',
@@ -2853,76 +3111,17 @@ begin
   EmailEdit.Text := EmailPlaceholder;
   EmailEdit.OnEnter := @EmailEditEnter;
   EmailEdit.OnExit := @EmailEditExit;
+
+  CreateReadySummaryControls();
 end;
 
 function UpdateReadyMemo(
   Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
   MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String
 ): String;
-var
-  Mode: String;
-  Email: String;
 begin
-  if (OperatingModePage <> nil) and OperatingModePage.Values[1] then
-    Mode := 'Link'
-  else
-    Mode := 'Shim (recommended)';
-
-  if (EmailEdit <> nil) and (Trim(EmailEdit.Text) <> '') and (Trim(EmailEdit.Text) <> EmailPlaceholder) then
-    Email := Trim(EmailEdit.Text)
-  else
-    Email := 'Not provided';
-
-  Result :=
-    'NVM for Windows will be installed with the following settings:' + NewLine + NewLine +
-    Space + 'Node.js storage: ' + GetInstallRoot('') + NewLine +
-    Space + 'Runtime data root: ' + GetDataRoot('') + NewLine +
-    Space + 'Operating mode: ' + Mode + NewLine + NewLine +
-    Space + 'Keep downloaded Node.js setup files (cache for reinstall): ';
-  if (PreferencesPage <> nil) and PreferencesPage.Values[0] then
-    Result := Result + 'Yes' + NewLine
-  else
-    Result := Result + 'No' + NewLine;
-
-  Result := Result + Space + 'Auto-detect Node.js version, e.g. .nvmrc, .node-version, package.json: ';
-  if (PreferencesPage <> nil) and PreferencesPage.Values[1] then
-    Result := Result + 'Yes' + NewLine
-  else
-    Result := Result + 'No' + NewLine;
-
-  Result := Result + Space + 'Auto-install missing Node.js versions: ';
-  if (PreferencesPage <> nil) and PreferencesPage.Values[2] then
-    Result := Result + 'Yes' + NewLine
-  else
-    Result := Result + 'No' + NewLine;
-
-  Result := Result + Space + 'Prompt before installing: ';
-  if (PreferencesPage <> nil) and PreferencesPage.Values[3] then
-    Result := Result + 'Yes' + NewLine
-  else
-    Result := Result + 'No' + NewLine;
-
-  Result := Result + Space + 'Validate TLS/SSL certificates: ';
-  if (PreferencesPage <> nil) and PreferencesPage.Values[4] then
-    Result := Result + 'Yes' + NewLine
-  else
-    Result := Result + 'No' + NewLine;
-
-  Result := Result + NewLine + Space + 'Announcements email: ' + Email;
-
-  Result := Result + NewLine + NewLine +
-    'Note: You may be prompted to allow NVM for Windows to register as a Windows event source.';
-
-  Result := Result + NewLine + NewLine +
-    'Community support notice:' + NewLine +
-    'This Community build installs program files under your per-user LocalAppData folder.' + NewLine +
-    'It is intended for individual workstation use (including Winget).' + NewLine +
-    'For an IT-managed Program Files install, MSI, or Intune deployment, use NVM for Windows Certified Builds.';
-
-  if IsPreV2Upgrade then
-    Result := Result + NewLine + NewLine +
-      'Note: A prior NVM for Windows installation was detected.' + NewLine +
-      'Your settings and Node.js versions will be migrated.';
+  { Ready page uses CreateReadySummaryControls, not this memo. }
+  Result := '';
 end;
 
 function ReplaceVarCI(const S, VarName, Value: String): String;
@@ -3047,7 +3246,7 @@ begin
   { Hardlinks to proxy require same volume; certified also keeps proxy on DataRoot. }
   if FileExists(ProgramProxy) then
   begin
-    if not FileCopy(ProgramProxy, DataProxy, False) then
+    if not CopyFile(ProgramProxy, DataProxy, False) then
       AppendInstallLogWarn('EnsureDataRootRuntimeLayout: failed to copy proxy.exe to DataRoot')
     else
       AppendInstallLog('EnsureDataRootRuntimeLayout: copied proxy.exe to ' + DataProxy);
@@ -3628,14 +3827,40 @@ begin
 end;
 
 procedure ConfigureUninstallDisplayIcon();
+var
+  UninstallKey: String;
+  CoreVersion: String;
+  Position: Integer;
+  MajorVer: Integer;
+  MinorVer: Integer;
 begin
-  { Always refresh ARP icon so Installed apps shows logo after upgrade }
+  { Always refresh ARP metadata so Installed apps shows logo + version after upgrade.
+    Inno can leave DisplayVersion stale when UsePreviousAppDir=no reuses the same _is1 key. }
+  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1';
   RegWriteStringValue(
     HKCU,
-    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppId}_is1',
+    UninstallKey,
     'DisplayIcon',
     ExpandConstant('{app}\.icons\{#Alias}.ico')
   );
+  RegWriteStringValue(HKCU, UninstallKey, 'DisplayName', '{#Name}');
+  RegWriteStringValue(HKCU, UninstallKey, 'DisplayVersion', '{#Version}');
+
+  CoreVersion := GetCoreVersion('{#Version}');
+  Position := 1;
+  MajorVer := NextVersionPart(CoreVersion, Position);
+  MinorVer := NextVersionPart(CoreVersion, Position);
+  if MajorVer < 0 then
+    MajorVer := 0;
+  if MinorVer < 0 then
+    MinorVer := 0;
+  RegWriteDWordValue(HKCU, UninstallKey, 'VersionMajor', MajorVer);
+  RegWriteDWordValue(HKCU, UninstallKey, 'VersionMinor', MinorVer);
+  RegWriteDWordValue(HKCU, UninstallKey, 'MajorVersion', MajorVer);
+  RegWriteDWordValue(HKCU, UninstallKey, 'MinorVersion', MinorVer);
+
+  { Keep preference Version in sync for detection / migration prompts. }
+  RegWriteStringValue(HKCU, '{#RegistryKey}', 'Version', '{#Version}');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -3663,6 +3888,8 @@ begin
   FinalizingTotal := FinalizingTotal + 1;  { close blocking Node/NVM processes }
   FinalizingTotal := FinalizingTotal + 1;  { for forced reshim at final step }
   FinalizingTotal := FinalizingTotal + 1;  { for runtime ACL repair }
+  if OfficialNodeDetected then
+    FinalizingTotal := FinalizingTotal + 1;
 
   FinalizingStep := 0;
   FinalizingPage := CreateOutputProgressPage(
@@ -3700,6 +3927,12 @@ begin
     FinalizingStep := FinalizingStep + 1;
     UpdateFinalizingProgress(FinalizingPage, 'Migrating installed Node.js versions...', FinalizingStep, FinalizingTotal);
     MigrateNodeStorageIfNeeded();
+    if OfficialNodeDetected then
+    begin
+      FinalizingStep := FinalizingStep + 1;
+      UpdateFinalizingProgress(FinalizingPage, 'Applying official Node.js choice...', FinalizingStep, FinalizingTotal);
+      ApplyOfficialNodeChoice();
+    end;
     if MigrationPerformed and HasSkippedSymlinks() then
       MsgBox(
         'Some migrated links could not be recreated automatically.' + #13#10 + #13#10 +
@@ -3803,6 +4036,7 @@ begin
     SignInstalledVersionScripts();
     PrewarmNpmAndNpxShims();
     WarnIfShimFinalizeIncomplete();
+    WarnIfOfficialNodeIncomplete();
 
     if ShouldRunSubscriptionCommand() then
     begin
