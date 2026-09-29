@@ -134,8 +134,49 @@ function Set-NvmCliManifestVersion {
 	Write-Host ("CLI manifest version -> {0} (was {1}) [{2}]" -f $ver, $before, $manifestPath)
 }
 
+function Use-NvmZigOnPath {
+	$existing = Get-Command zig -ErrorAction SilentlyContinue
+	if ($existing -and (Test-Path -LiteralPath $existing.Source -PathType Leaf)) {
+		return $existing.Source
+	}
+
+	$wanted = ""
+	$zigVersionFile = Join-Path $script:NvmRepoRoot "shim\.zigversion"
+	if (Test-Path -LiteralPath $zigVersionFile -PathType Leaf) {
+		$wanted = (Get-Content -LiteralPath $zigVersionFile -TotalCount 1).Trim()
+	}
+
+	$candidates = [System.Collections.Generic.List[string]]::new()
+	if (-not [string]::IsNullOrWhiteSpace($wanted)) {
+		$candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\zig-$wanted\zig.exe"))
+		$candidates.Add((Join-Path $env:LOCALAPPDATA "zig-$wanted\zig.exe"))
+	}
+	$candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\zig\zig.exe"))
+
+	foreach ($exe in $candidates) {
+		if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+			continue
+		}
+		$dir = Split-Path -Parent $exe
+		if ($env:Path -notlike "*$dir*") {
+			$env:Path = "$dir;$env:Path"
+		}
+		Write-Host "zig (session PATH) -> $exe"
+		return $exe
+	}
+
+	$hint = if ([string]::IsNullOrWhiteSpace($wanted)) { "zig" } else { "zig $wanted" }
+	throw @"
+$hint not on PATH. This PowerShell session was opened before Zig was installed.
+Install from https://ziglang.org/download/ then reopen the terminal, or:
+  `$env:Path = `"`$env:LOCALAPPDATA\Programs\zig-$wanted;`" + `$env:Path
+"@
+}
+
 function Initialize-NvmBuildContext {
 	param([string]$BinRoot = "")
+
+	Use-NvmZigOnPath | Out-Null
 
 	$resolvedBin = if ([string]::IsNullOrWhiteSpace($BinRoot)) {
 		Get-NvmDefaultBinRoot
