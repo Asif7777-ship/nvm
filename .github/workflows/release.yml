@@ -121,7 +121,7 @@ jobs:
           HOTFIX: ${{ inputs.prerelease }}
         run: |
           . .\build\common.ps1
-          $null = Initialize-NvmBuildContext
+          $null = Initialize-NvmBuildContext -SkipZig
           # Always read base from on-disk manifest (ignore any prior NVM_CLI_VERSION).
           $manifestPath = Get-NvmCliManifestPath
           $baseVersion = [string](Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).version
@@ -249,7 +249,7 @@ jobs:
             throw "prepare.outputs.version empty (cannot stamp cli/src/manifest.json)"
           }
           . .\build\common.ps1
-          $null = Initialize-NvmBuildContext
+          $null = Initialize-NvmBuildContext -SkipZig
           $base = (Get-Content -LiteralPath (Get-NvmCliManifestPath) -Raw -Encoding UTF8 | ConvertFrom-Json).version
           Set-NvmCliManifestVersion -Version $env:EFFECTIVE_VERSION
           if ($env:EFFECTIVE_VERSION -ne [string]$base) {

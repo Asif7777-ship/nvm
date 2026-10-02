@@ -174,9 +174,15 @@ Install from https://ziglang.org/download/ then reopen the terminal, or:
 }
 
 function Initialize-NvmBuildContext {
-	param([string]$BinRoot = "")
+	param(
+		[string]$BinRoot = "",
+		[switch]$SkipZig
+	)
 
-	Use-NvmZigOnPath | Out-Null
+	# Release version gate and manifest stamp run before setup-zig.
+	if (-not $SkipZig) {
+		Use-NvmZigOnPath | Out-Null
+	}
 
 	$resolvedBin = if ([string]::IsNullOrWhiteSpace($BinRoot)) {
 		Get-NvmDefaultBinRoot
