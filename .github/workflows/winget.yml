@@ -53,6 +53,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
       manifest_dir: ${{ steps.validate.outputs.manifest_dir }}
+      pull_request_url: ${{ steps.submit.outputs.pull_request_url }}
     steps:
       - name: Checkout manifest generator
         uses: actions/checkout@v7
@@ -263,6 +264,7 @@ jobs:
           retention-days: 30
 
       - name: Submit to microsoft/winget-pkgs
+        id: submit
         if: inputs.dry_run == false
         env:
           GH_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
@@ -386,11 +388,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Could not create branch $branch on $fork." }
 
           $bodyPath = Join-Path $env:RUNNER_TEMP 'winget-pr-body.md'
-          $template = gh api -H "Accept: application/vnd.github.raw" "repos/$upstream/contents/.github/PULL_REQUEST_TEMPLATE.md"
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($template)) {
-            throw "Could not read the winget-pkgs pull request template."
-          }
-          [System.IO.File]::WriteAllText($bodyPath, $template, $utf8)
+          $tag = $env:RELEASE_TAG.Trim()
+          $body = @"
+$title
 
-          gh pr create --repo $upstream --base master --head "$($env:FORK_OWNER):$branch" --title $title --body-file $bodyPath
+Node.js version manager for Windows.
+https://github.com/$($env:GITHUB_REPOSITORY)/releases/tag/$tag
+"@
+          [System.IO.File]::WriteAllText($bodyPath, $body.Trim() + "`n", $utf8)
+
+          $prOutput = gh pr create --repo $upstream --base master --head "$($env:FORK_OWNER):$branch" --title $title --body-file $bodyPath
           if ($LASTEXITCODE -ne 0) { throw "Could not open the winget-pkgs pull request." }
+          $prUrl = @($prOutput -split "`r?`n" | Where-Object { $_ -match '^https://github\.com/.+/pull/\d+\s*$' } | ForEach-Object { $_.Trim() }) | Select-Object -Last 1
+          if ([string]::IsNullOrWhiteSpace($prUrl)) {
+            throw "winget-pkgs pull request was created but no URL was returned. Output: $prOutput"
+          }
+          Write-Host "Pull request -> $prUrl"
+          Write-Host "::notice title=WinGet pull request::$prUrl"
+          "pull_request_url=$prUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, "### WinGet pull request`n`n$prUrl`n", $utf8)
