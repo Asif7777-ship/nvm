@@ -2773,6 +2773,7 @@ var
   ExistingInstallDetected: Boolean;
   V1NodeRoot: String;
   ForcedDir: String;
+  RequestedDir: String;
   Message: String;
 begin
   Result := True;
@@ -2861,16 +2862,20 @@ begin
   if Result and (not IsPreV2Upgrade) and HasExistingV2Preferences() then
     LoadExistingV2WizardDefaults();
 
-  // Silent /DIR overrides are rejected before wizard UI (Application event NVM4100 / EventId 4100); interactive mismatch is handled in InitializeWizard.
+  // Silent /DIR overrides are rejected before wizard UI (Application event NVM4100 / EventId 4100).
+  // Do not call WizardDirValue here. WizardForm does not exist during InitializeSetup,
+  // and a silent upgrade with no /DIR crashes on that read.
   if Result and WizardSilent then
   begin
     ForcedDir := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}');
-    if CompareText(NormalizePath(WizardDirValue), NormalizePath(ForcedDir)) <> 0 then
+    RequestedDir := ExpandConstant('{param:DIR|}');
+    if (RequestedDir <> '') and
+       (CompareText(NormalizePath(RequestedDir), NormalizePath(ForcedDir)) <> 0) then
     begin
       Message :=
         'NVM4100: {#Name} {#Version} silent install aborted. ' +
         'Custom program directories are not allowed (/DIR is ignored/rejected). ' +
-        'Requested "' + WizardDirValue + '"; required program root is "' + ForcedDir + '" under LocalAppData. ' +
+        'Requested "' + RequestedDir + '"; required program root is "' + ForcedDir + '" under LocalAppData. ' +
         'To choose where Node.js versions are stored, set InstallRoot (wizard Node.js Storage page, or nvm config after install) — do not use /DIR for the program root.';
       WriteApplicationEventError(4100, Message);
       Log(Message);
