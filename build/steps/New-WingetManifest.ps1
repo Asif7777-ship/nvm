@@ -91,9 +91,9 @@ PublisherSupportUrl: https://github.com/$Repository/issues
 PackageName: $packageName
 PackageUrl: https://github.com/$Repository
 License: MIT
-LicenseUrl: https://github.com/$Repository/blob/HEAD/LICENSE
+LicenseUrl: https://github.com/$Repository/blob/main/LICENSE
 Copyright: Copyright (c) 2026 $publisher
-CopyrightUrl: https://github.com/$Repository/blob/HEAD/LICENSE
+CopyrightUrl: https://github.com/$Repository/blob/main/LICENSE
 ShortDescription: Node.js version manager for Windows.
 Moniker: nvm-windows
 Tags:
