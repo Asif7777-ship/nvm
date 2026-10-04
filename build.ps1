@@ -3,3 +3,7 @@
 if ($null -ne $LASTEXITCODE) {
 	exit $LASTEXITCODE
 }
+- name: Set up Node.js
+  uses: actions/setup-node@v4
+  with:
+    node-version: ${{ env.NODE_VERSION }}
