@@ -268,9 +268,13 @@ jobs:
           GH_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
           MANIFEST_DIR: ${{ steps.validate.outputs.manifest_dir }}
+          FORK_OWNER: nvm-windows
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
           if ([string]::IsNullOrWhiteSpace($env:WINGET_CREATE_GITHUB_TOKEN)) {
-            throw "dry_run is false but secret WINGET_CREATE_GITHUB_TOKEN is empty. Set a classic PAT with public_repo."
+            throw "dry_run is false but secret WINGET_CREATE_GITHUB_TOKEN is empty. Set a classic PAT with public_repo for a user who can create repositories in the nvm-windows org."
           }
 
           $login = (gh api user --jq .login).Trim()
@@ -279,23 +283,112 @@ jobs:
           }
           Write-Host "WinGet token user -> $login"
 
-          # wingetcreate reports a failed fork sync as "Failed to connect to GitHub".
-          # Sync the fork first so submit does not have to fast-forward a stale master.
-          $fork = gh api "repos/$login/winget-pkgs" --jq .full_name 2>$null
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($fork)) {
-            gh repo fork microsoft/winget-pkgs --clone=false
-            if ($LASTEXITCODE -ne 0) { throw "Could not fork microsoft/winget-pkgs for $login." }
-            $fork = "$login/winget-pkgs"
+          $packageId = $env:WINGET_PACKAGE_IDENTIFIER
+          if ([string]::IsNullOrWhiteSpace($packageId)) { throw "WINGET_PACKAGE_IDENTIFIER is empty." }
+          $version = ($env:RELEASE_TAG.Trim() -replace '^[vV]', '')
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "RELEASE_TAG is empty." }
+
+          # AuthorSoftware.NVMWindows is a new package. This pull request adds that id.
+          # It does not update CoreyButler.NVMforWindows. wingetcreate submit always
+          # writes to the token user's fork, so the pull request is opened from the org fork.
+          $fork = "$($env:FORK_OWNER)/winget-pkgs"
+          $upstream = 'microsoft/winget-pkgs'
+          Write-Host "Package -> $packageId version $version"
+          Write-Host "Fork -> $fork"
+
+          $forkName = gh api "repos/$fork" --jq .full_name 2>$null
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($forkName)) {
+            Write-Host "Creating fork $fork"
+            gh repo fork $upstream --org $env:FORK_OWNER --clone=false
+            if ($LASTEXITCODE -ne 0) { throw "Could not fork $upstream into $($env:FORK_OWNER)." }
           }
+
+          $archived = (gh api "repos/$fork" --jq .archived).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Could not read $fork." }
+          if ($archived -eq 'true') {
+            Write-Host "Unarchiving $fork so it can accept the package branch."
+            gh api --method PATCH "repos/$fork" -F archived=false
+            if ($LASTEXITCODE -ne 0) { throw "Could not unarchive $fork." }
+          }
+
+          $ready = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            gh api "repos/$fork/git/ref/heads/master" 1>$null 2>$null
+            if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+            Write-Host "Waiting for $fork master..."
+            Start-Sleep -Seconds 10
+          }
+          if (-not $ready) { throw "Fork $fork has no master branch yet." }
+
           gh repo sync $fork --branch master
-          if ($LASTEXITCODE -ne 0) { throw "Could not sync $fork with microsoft/winget-pkgs master." }
+          if ($LASTEXITCODE -ne 0) { throw "Could not sync $fork with $upstream master." }
 
-          $wingetCreate = Join-Path $env:RUNNER_TEMP 'wingetcreate.exe'
-          Invoke-WebRequest `
-            -Uri 'https://aka.ms/wingetcreate/latest' `
-            -OutFile $wingetCreate
+          $baseSha = (gh api "repos/$fork/git/ref/heads/master" --jq .object.sha).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($baseSha)) {
+            throw "Could not read $fork master SHA."
+          }
+          $baseTree = (gh api "repos/$fork/git/commits/$baseSha" --jq .tree.sha).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($baseTree)) {
+            throw "Could not read the tree for $baseSha."
+          }
 
-          & $wingetCreate info
-          if ($LASTEXITCODE -ne 0) { throw "wingetcreate info failed." }
-          & $wingetCreate submit $env:MANIFEST_DIR --no-open
-          if ($LASTEXITCODE -ne 0) { throw "wingetcreate submit failed." }
+          $outputRoot = (Resolve-Path (Join-Path $env:GITHUB_WORKSPACE 'winget-output')).Path
+          $manifestFiles = @(Get-ChildItem -LiteralPath $env:MANIFEST_DIR -File)
+          if ($manifestFiles.Count -lt 1) { throw "No manifest files in $($env:MANIFEST_DIR)." }
+
+          $tree = New-Object System.Collections.Generic.List[object]
+          foreach ($file in $manifestFiles) {
+            $relative = [System.IO.Path]::GetRelativePath($outputRoot, $file.FullName).Replace('\', '/')
+            if ($relative -notlike 'manifests/*') { throw "Manifest path is outside manifests/: $relative" }
+            $tree.Add([ordered]@{
+              path = $relative
+              mode = '100644'
+              type = 'blob'
+              content = [System.IO.File]::ReadAllText($file.FullName)
+            })
+          }
+
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          $treeJsonPath = Join-Path $env:RUNNER_TEMP 'winget-tree.json'
+          $treeJson = @{ base_tree = $baseTree; tree = $tree } | ConvertTo-Json -Depth 6 -Compress
+          [System.IO.File]::WriteAllText($treeJsonPath, $treeJson, $utf8)
+          $treeSha = (gh api --method POST "repos/$fork/git/trees" --input $treeJsonPath --jq .sha).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($treeSha)) {
+            throw "Could not create the manifest tree on $fork."
+          }
+
+          $segments = $packageId.Split('.')
+          $packagePath = "manifests/$($segments[0].Substring(0,1).ToLowerInvariant())/$($segments -join '/')"
+          gh api "repos/$upstream/contents/$packagePath" 1>$null 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $title = "Add version: $packageId version $version"
+          }
+          else {
+            $title = "New package: $packageId version $version"
+          }
+          Write-Host "Pull request title -> $title"
+
+          $commitJsonPath = Join-Path $env:RUNNER_TEMP 'winget-commit.json'
+          $commitJson = @{ message = $title; tree = $treeSha; parents = @($baseSha) } | ConvertTo-Json -Depth 5 -Compress
+          if ($commitJson -notmatch '"parents"\s*:\s*\[') {
+            throw "Commit parents were not serialized as a JSON array."
+          }
+          [System.IO.File]::WriteAllText($commitJsonPath, $commitJson, $utf8)
+          $commitSha = (gh api --method POST "repos/$fork/git/commits" --input $commitJsonPath --jq .sha).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitSha)) {
+            throw "Could not create the manifest commit on $fork."
+          }
+
+          $branch = "$packageId-$version-$([guid]::NewGuid().ToString('n').Substring(0, 8))"
+          gh api --method POST "repos/$fork/git/refs" -f ref="refs/heads/$branch" -f sha="$commitSha"
+          if ($LASTEXITCODE -ne 0) { throw "Could not create branch $branch on $fork." }
+
+          $bodyPath = Join-Path $env:RUNNER_TEMP 'winget-pr-body.md'
+          $template = gh api -H "Accept: application/vnd.github.raw" "repos/$upstream/contents/.github/PULL_REQUEST_TEMPLATE.md"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($template)) {
+            throw "Could not read the winget-pkgs pull request template."
+          }
+          [System.IO.File]::WriteAllText($bodyPath, $template, $utf8)
+
+          gh pr create --repo $upstream --base master --head "$($env:FORK_OWNER):$branch" --title $title --body-file $bodyPath
+          if ($LASTEXITCODE -ne 0) { throw "Could not open the winget-pkgs pull request." }

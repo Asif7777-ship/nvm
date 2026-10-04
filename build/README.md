@@ -77,9 +77,9 @@ Use it only after a public GitHub Release has both `x64` and `arm64` setup asset
 4. Runs `winget validate`.
 5. By default, runs a silent install smoke test from the downloaded x64 setup asset, runs `nvm --version`, then uninstalls.
 6. Uploads the generated manifests as a workflow artifact.
-7. When `dry_run` is **false**, runs `wingetcreate submit` against `microsoft/winget-pkgs` (needs package already present under that ID).
+7. When `dry_run` is **false**, opens a pull request from `nvm-windows/winget-pkgs` that adds `AuthorSoftware.NVMWindows`. The first submission is a new package. Later runs add a version. This does not update `CoreyButler.NVMforWindows`.
 
-`dry_run` defaults to **true** (validate only). Live submit needs secret `WINGET_CREATE_GITHUB_TOKEN` (classic PAT with `public_repo` on a fork of `microsoft/winget-pkgs`).
+`dry_run` defaults to **true** (validate only). Live submit needs secret `WINGET_CREATE_GITHUB_TOKEN` (classic PAT with `public_repo` for a user who can create a repository in the `nvm-windows` org).
 
 Inputs:
 
@@ -87,7 +87,7 @@ Inputs:
 |-------|---------|---------|
 | `release` | `latest` | `latest` = newest stable GitHub Release (no drafts/pre-releases). `custom` = use `release_tag`. |
 | `release_tag` | empty | Tag for `custom` (e.g. `v2.0.0-alpha.2`). Ignored when `release=latest`. |
-| `dry_run` | true | **On:** generate manifest, `winget validate`, upload artifact — no PR. **Off:** submit to `microsoft/winget-pkgs` (public repo + `WINGET_CREATE_GITHUB_TOKEN`). |
+| `dry_run` | true | **On:** generate manifest, `winget validate`, upload artifact — no PR. **Off:** open a `microsoft/winget-pkgs` pull request from `nvm-windows/winget-pkgs` for `AuthorSoftware.NVMWindows`. |
 | `install_test` | true | Silent install smoke test via local `release-assets` installer (not `winget install`). 4 min process timeout + 5 min step cap. Warns/skips on failure; never fails dry-run. |
 | `verify_public_urls` | true | Anonymous GitHub release download + SHA256 must match manifest hashes. Fails workflow on mismatch (dry-run or publish). |
 
@@ -97,7 +97,7 @@ Inputs:
 |------|---------|
 | `GH_APP_CLIENT_ID` | GitHub App client ID (submodule checkout) |
 | `GH_APP_PRIVATE_KEY` | App private key PEM |
-| `WINGET_CREATE_GITHUB_TOKEN` | Classic PAT (`public_repo`) for WinGet submit when `dry_run=false` |
+| `WINGET_CREATE_GITHUB_TOKEN` | Classic PAT (`public_repo`) that can fork into the `nvm-windows` org and push `nvm-windows/winget-pkgs` when `dry_run=false` |
 
 App install on `nvm-windows` must include **nvm**, **cli**, **common**, **shim**, **sync** (or all repos), **Contents: Read**. Inno Setup lives in-repo at `installer/` (not a submodule). Release publish uses `github.token` (`contents: write`).
 
