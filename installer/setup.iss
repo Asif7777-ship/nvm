@@ -261,8 +261,8 @@ function SendMessageTimeoutW(hWnd: HWND; Msg: UINT; wParam: UINT; lParam: String
   fuFlags: UINT; uTimeout: UINT; var lpdwResult: DWORD): DWORD;
   external 'SendMessageTimeoutW@user32.dll stdcall';
 
-{ Inno {localappdata} uses the shell-folder API. A mapped A: drive can make that
-  return A:\Users\... instead of the real profile. LOCALAPPDATA does not. }
+// Inno's localappdata constant uses the shell-folder API. A mapped A: drive
+// can make that return A:\Users\... instead of the real profile. LOCALAPPDATA does not.
 function GetRealLocalAppData(Param: String): String;
 var
   Profile: String;
