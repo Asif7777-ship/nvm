@@ -1,14 +1,14 @@
-{ Official Node.js adopt / drop / ignore. Included from setup.iss [Code]. }
+{ Official Node.js adopt / drop. Included from setup.iss [Code]. }
 
 function OfficialNodeParam(): String;
 var
   Raw: String;
 begin
   Raw := LowerCase(Trim(ExpandConstant('{param:OFFICIALNODE}')));
-  if (Raw = 'adopt') or (Raw = 'drop') or (Raw = 'ignore') then
+  if (Raw = 'adopt') or (Raw = 'drop') then
     Result := Raw
   else
-    Result := 'ignore';
+    Result := 'adopt';
 end;
 
 function IsNvmManagedPath(const PathValue: String): Boolean;
@@ -338,12 +338,10 @@ begin
   Result := OfficialNodeAction;
   if OfficialNodePage = nil then
     Exit;
-  if OfficialNodePage.Values[0] then
-    Result := 'adopt'
-  else if OfficialNodePage.Values[1] then
+  if OfficialNodePage.Values[1] then
     Result := 'drop'
   else
-    Result := 'ignore';
+    Result := 'adopt';
 end;
 
 procedure CreateOfficialNodePage();
@@ -357,7 +355,7 @@ begin
   Description :=
     OfficialNodeSummary() + #13#10 +
     'Location: ' + OfficialNodePath + #13#10#13#10 +
-    'Adopt copies this version and your global modules into NVM. Drop uninstalls official Node.js without copying. Ignore leaves it installed and puts NVM first on PATH.';
+    'The existing Node.js installation overrides NVM for Windows and must be removed. Removing it may require elevated privileges.';
 
   OfficialNodePage := CreateInputOptionPage(
     wpLicense,
@@ -367,16 +365,13 @@ begin
     True,
     False
   );
-  OfficialNodePage.Add('Adopt — copy into NVM and keep official Node.js');
-  OfficialNodePage.Add('Drop — uninstall official Node.js (do not copy)');
-  OfficialNodePage.Add('Ignore — leave official Node.js, NVM PATH first');
+  OfficialNodePage.Add('Adopt — copy into NVM and uninstall the existing installation');
+  OfficialNodePage.Add('Drop — uninstall the existing installation (do not copy)');
 
-  if OfficialNodeAction = 'adopt' then
-    OfficialNodePage.Values[0] := True
-  else if OfficialNodeAction = 'drop' then
+  if OfficialNodeAction = 'drop' then
     OfficialNodePage.Values[1] := True
   else
-    OfficialNodePage.Values[2] := True;
+    OfficialNodePage.Values[0] := True;
 end;
 
 function AdoptOfficialNodeVersion(): Boolean;
@@ -453,6 +448,23 @@ begin
     AppendInstallLog('AdoptOfficialNode: nvm use ' + UseVer);
 end;
 
+function UninstallResultOk(const Started: Boolean; const ResultCode: Integer): Boolean;
+begin
+  Result := Started and ((ResultCode = 0) or (ResultCode = 3010) or (ResultCode = 1641));
+end;
+
+procedure NoteUninstallFailure(const Started: Boolean; const ResultCode: Integer; const FailureText: String);
+begin
+  OfficialNodeDropFailed := True;
+  if (not Started) and (ResultCode = 1223) then
+    OfficialNodeDropError := 'The admin prompt was canceled.'
+  else if not Started then
+    OfficialNodeDropError := 'Could not start the uninstaller (system error ' + IntToStr(ResultCode) + ').'
+  else
+    OfficialNodeDropError := FailureText + ' (exit ' + IntToStr(ResultCode) + ').';
+  AppendInstallLogWarn('DropOfficialNode: ' + OfficialNodeDropError);
+end;
+
 function DropOfficialNodeInstall(): Boolean;
 var
   ResultCode: Integer;
@@ -474,11 +486,9 @@ begin
       ewWaitUntilTerminated,
       ResultCode
     );
-    if (not Ok) or (ResultCode <> 0) then
+    if not UninstallResultOk(Ok, ResultCode) then
     begin
-      OfficialNodeDropFailed := True;
-      OfficialNodeDropError := 'Silent MSI uninstall failed (exit ' + IntToStr(ResultCode) + ').';
-      AppendInstallLogWarn('DropOfficialNode: msiexec ' + OfficialNodeDropError);
+      NoteUninstallFailure(Ok, ResultCode, 'Silent MSI uninstall failed');
       Exit;
     end;
     Result := True;
@@ -494,11 +504,9 @@ begin
     if Pos('/qn', LowerCase(Args)) = 0 then
       Args := Args + ' /qn /norestart';
     Ok := ShellExec('runas', ExpandConstant('{cmd}'), '/C ' + Args, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    if (not Ok) or (ResultCode <> 0) then
+    if not UninstallResultOk(Ok, ResultCode) then
     begin
-      OfficialNodeDropFailed := True;
-      OfficialNodeDropError := 'MSI uninstall string failed (exit ' + IntToStr(ResultCode) + ').';
-      AppendInstallLogWarn('DropOfficialNode: ' + OfficialNodeDropError);
+      NoteUninstallFailure(Ok, ResultCode, 'MSI uninstall string failed');
       Exit;
     end;
     Result := True;
@@ -508,11 +516,9 @@ begin
   if Trim(OfficialNodeUninstallString) <> '' then
   begin
     Ok := ShellExec('runas', ExpandConstant('{cmd}'), '/C ' + OfficialNodeUninstallString, '', SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode);
-    if (not Ok) or (ResultCode <> 0) then
+    if not UninstallResultOk(Ok, ResultCode) then
     begin
-      OfficialNodeDropFailed := True;
-      OfficialNodeDropError := 'Official uninstall failed (exit ' + IntToStr(ResultCode) + ').';
-      AppendInstallLogWarn('DropOfficialNode: ' + OfficialNodeDropError);
+      NoteUninstallFailure(Ok, ResultCode, 'Official uninstall failed');
       Exit;
     end;
     Result := True;
@@ -524,6 +530,23 @@ begin
   AppendInstallLogWarn('DropOfficialNode: ' + OfficialNodeDropError);
 end;
 
+procedure AbortInstallBecauseOfficialNodeRemains();
+var
+  MessageText: String;
+begin
+  MessageText :=
+    'The existing Node.js installation could not be removed.' + #13#10#13#10 +
+    OfficialNodeDropError + #13#10#13#10 +
+    'Exit the NVM for Windows installer, remove the existing Node.js version, then run the installer again.' + #13#10#13#10 +
+    'Node.js is still at:' + #13#10 +
+    OfficialNodePath + #13#10#13#10 +
+    'Removing it may require elevated privileges.';
+  AppendInstallLogWarn('ApplyOfficialNodeChoice: ' + OfficialNodeDropError);
+  if not WizardSilent then
+    MsgBox(MessageText, mbError, MB_OK);
+  Abort;
+end;
+
 procedure ApplyOfficialNodeChoice();
 begin
   if not OfficialNodeDetected then
@@ -532,15 +555,17 @@ begin
   OfficialNodeAction := SelectedOfficialNodeAction();
   AppendInstallLog('ApplyOfficialNodeChoice: action=' + OfficialNodeAction + ' path=' + OfficialNodePath);
 
-  if OfficialNodeAction = 'adopt' then
+  if OfficialNodeAction = 'drop' then
+    DropOfficialNodeInstall()
+  else
   begin
     if not AdoptOfficialNodeVersion() then
       OfficialNodeCopyFailed := True;
-    Exit;
+    DropOfficialNodeInstall();
   end;
 
-  if OfficialNodeAction = 'drop' then
-    DropOfficialNodeInstall();
+  if OfficialNodeDropFailed then
+    AbortInstallBecauseOfficialNodeRemains();
 end;
 
 procedure WarnIfOfficialNodeIncomplete();
@@ -554,21 +579,8 @@ begin
   begin
     MessageText :=
       OfficialNodeSummary() + #13#10#13#10 +
-      'NVM copied nothing (or the copy failed). Official Node.js is still at:' + #13#10 +
-      OfficialNodePath + #13#10#13#10 +
-      'NVM itself finished installing. Adopt again later or install the version with nvm install.';
-    MsgBox(MessageText, mbInformation, MB_OK);
-    Exit;
-  end;
-
-  if OfficialNodeDropFailed then
-  begin
-    MessageText :=
-      'NVM did not uninstall official Node.js.' + #13#10#13#10 +
-      OfficialNodeDropError + #13#10#13#10 +
-      'Official Node.js is still at:' + #13#10 +
-      OfficialNodePath + #13#10#13#10 +
-      'Uninstall it from Apps & features, or run msiexec /x on the Node.js product.';
+      'NVM could not copy this version. The existing Node.js installation was removed.' + #13#10#13#10 +
+      'Install that version later with nvm install.';
     MsgBox(MessageText, mbInformation, MB_OK);
   end;
 end;
