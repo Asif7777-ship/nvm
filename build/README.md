@@ -79,7 +79,7 @@ Use it only after a public GitHub Release has both `x64` and `arm64` setup asset
 6. Uploads the generated manifests as a workflow artifact.
 7. When `dry_run` is **false**, opens a pull request from `nvm-windows/winget-pkgs` that adds `AuthorSoftware.NVMWindows`. The first submission is a new package. Later runs add a version. This does not update `CoreyButler.NVMforWindows`.
 
-`dry_run` defaults to **true** (validate only). Live submit needs secret `WINGET_CREATE_GITHUB_TOKEN` (classic PAT with `public_repo` for a user who can create a repository in the `nvm-windows` org).
+`dry_run` defaults to **true** (validate only). Live submit needs secret `WINGET_CREATE_GITHUB_TOKEN` (classic PAT with `public_repo` and `workflow` for a user who can push `nvm-windows/winget-pkgs`). The `workflow` scope is required because syncing that fork fast-forwards Microsoft's Actions workflow changes.
 
 Inputs:
 
@@ -97,7 +97,7 @@ Inputs:
 |------|---------|
 | `GH_APP_CLIENT_ID` | GitHub App client ID (submodule checkout) |
 | `GH_APP_PRIVATE_KEY` | App private key PEM |
-| `WINGET_CREATE_GITHUB_TOKEN` | Classic PAT (`public_repo`) that can fork into the `nvm-windows` org and push `nvm-windows/winget-pkgs` when `dry_run=false` |
+| `WINGET_CREATE_GITHUB_TOKEN` | Classic PAT (`public_repo` and `workflow`) that can push `nvm-windows/winget-pkgs` when `dry_run=false` |
 
 App install on `nvm-windows` must include **nvm**, **cli**, **common**, **shim**, **sync** (or all repos), **Contents: Read**. Inno Setup lives in-repo at `installer/` (not a submodule). Release publish uses `github.token` (`contents: write`).
 

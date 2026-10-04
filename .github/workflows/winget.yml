@@ -274,12 +274,12 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
 
           if ([string]::IsNullOrWhiteSpace($env:WINGET_CREATE_GITHUB_TOKEN)) {
-            throw "dry_run is false but secret WINGET_CREATE_GITHUB_TOKEN is empty. Set a classic PAT with public_repo for a user who can create repositories in the nvm-windows org."
+            throw "dry_run is false but secret WINGET_CREATE_GITHUB_TOKEN is empty. Set a classic PAT with public_repo and workflow for a user who can push to nvm-windows/winget-pkgs."
           }
 
           $login = (gh api user --jq .login).Trim()
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($login)) {
-            throw "WINGET_CREATE_GITHUB_TOKEN could not read the GitHub user. Use a classic PAT with public_repo."
+            throw "WINGET_CREATE_GITHUB_TOKEN could not read the GitHub user. Use a classic PAT with public_repo and workflow."
           }
           Write-Host "WinGet token user -> $login"
 
@@ -321,7 +321,9 @@ jobs:
           if (-not $ready) { throw "Fork $fork has no master branch yet." }
 
           gh repo sync $fork --branch master
-          if ($LASTEXITCODE -ne 0) { throw "Could not sync $fork with $upstream master." }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not sync $fork with $upstream master. winget-pkgs updates .github/workflows, so WINGET_CREATE_GITHUB_TOKEN must be a classic PAT with public_repo and workflow. Add the workflow scope on the existing token, then re-run."
+          }
 
           $baseSha = (gh api "repos/$fork/git/ref/heads/master" --jq .object.sha).Trim()
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($baseSha)) {
