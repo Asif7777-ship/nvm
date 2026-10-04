@@ -80,7 +80,9 @@ ArchitecturesInstallIn64BitMode=arm64
 ArchitecturesAllowed=x64compatible and not arm64
 ArchitecturesInstallIn64BitMode=x64compatible
 #endif
-DefaultDirName={localappdata}\{#OrgLabel}\{#Alias}
+; {localappdata} follows the shell-folder API and can resolve to a mapped A: drive.
+; LOCALAPPDATA is the profile path Windows and nvm already use.
+DefaultDirName={code:GetRealProgramRoot}
 UsePreviousAppDir=no
 LicenseFile={#ProjectRoot}\LICENSE
 OutputDir={#ProjectRoot}\..\.dist\
@@ -258,6 +260,31 @@ const
 function SendMessageTimeoutW(hWnd: HWND; Msg: UINT; wParam: UINT; lParam: String;
   fuFlags: UINT; uTimeout: UINT; var lpdwResult: DWORD): DWORD;
   external 'SendMessageTimeoutW@user32.dll stdcall';
+
+{ Inno {localappdata} uses the shell-folder API. A mapped A: drive can make that
+  return A:\Users\... instead of the real profile. LOCALAPPDATA does not. }
+function GetRealLocalAppData(Param: String): String;
+var
+  Profile: String;
+begin
+  Result := RemoveBackslashUnlessRoot(Trim(GetEnv('LOCALAPPDATA')));
+  if Result <> '' then
+    Exit;
+
+  Profile := RemoveBackslashUnlessRoot(Trim(GetEnv('USERPROFILE')));
+  if Profile <> '' then
+    Result := Profile + '\AppData\Local';
+end;
+
+function GetRealProgramRoot(Param: String): String;
+begin
+  Result := GetRealLocalAppData('') + '\{#OrgLabel}\{#Alias}';
+end;
+
+function GetRealInstallRoot(Param: String): String;
+begin
+  Result := GetRealProgramRoot('') + '\installs';
+end;
 
 function NormalizePath(const PathValue: String): String; forward;
 procedure SplitPathString(const PathStr: String; var Segments: TArrayOfString); forward;
@@ -609,7 +636,7 @@ end;
 
 function GetInstallRoot(Param: String): String;
 begin
-  Result := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}\installs');
+  Result := GetRealInstallRoot('');
 
   if (NodeStoragePage <> nil) and (Trim(NodeStoragePage.Values[0]) <> '') then
     Result := Trim(NodeStoragePage.Values[0]);
@@ -743,7 +770,7 @@ function GetLegacyV1NodeStorageRoot(): String;
 begin
   Result := Trim(LegacySettingsRoot);
   if Result = '' then
-    Result := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}\installs');
+    Result := GetRealInstallRoot('');
 end;
 
 function GetLegacyV1InstalledVersion(): String;
@@ -1551,7 +1578,7 @@ end;
 
 procedure ResetWizardDefaults();
 begin
-  WizardDefaultInstallRoot := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}\installs');
+  WizardDefaultInstallRoot := GetRealInstallRoot('');
   WizardDefaultUseLinkMode := False;
   WizardDefaultCacheDownloads := False;
   WizardDefaultAutoDetect := True;
@@ -2440,7 +2467,7 @@ end;
 
 function DefaultAppDataInstallRoot(): String;
 begin
-  Result := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}\installs');
+  Result := GetRealInstallRoot('');
 end;
 
 function IsPathUnderSafeManagedRoot(const PathValue: String): Boolean;
@@ -2453,7 +2480,7 @@ begin
   if PathNorm = '' then
     Exit;
 
-  Candidate := LowerCase(NormalizePath(ExpandConstant('{localappdata}')));
+  Candidate := LowerCase(NormalizePath(GetRealLocalAppData('')));
   if (Candidate <> '') and ((PathNorm = Candidate) or (Pos(Candidate + '\', PathNorm) = 1)) then
   begin
     Result := True;
@@ -2867,7 +2894,7 @@ begin
   // and a silent upgrade with no /DIR crashes on that read.
   if Result and WizardSilent then
   begin
-    ForcedDir := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}');
+    ForcedDir := GetRealProgramRoot('');
     RequestedDir := ExpandConstant('{param:DIR|}');
     if (RequestedDir <> '') and
        (CompareText(NormalizePath(RequestedDir), NormalizePath(ForcedDir)) <> 0) then
@@ -2960,7 +2987,7 @@ var
   RequestedDir: String;
 begin
   Result := True;
-  ForcedDir := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}');
+  ForcedDir := GetRealProgramRoot('');
   RequestedDir := WizardDirValue;
   if CompareText(NormalizePath(RequestedDir), NormalizePath(ForcedDir)) = 0 then
   begin
@@ -4673,7 +4700,7 @@ function GetInstallRootForUninstall(Param: String): String;
 begin
   Result := '';
   if not RegQueryStringValue(HKCU, '{#RegistryKey}', 'InstallRoot', Result) then
-    Result := ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}\installs');
+    Result := GetRealInstallRoot('');
   Result := Trim(Result);
 end;
 

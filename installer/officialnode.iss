@@ -23,8 +23,8 @@ begin
   if N = '' then
     Exit;
 
-  // app constant is not initialized in InitializeWizard. Program root is always LocalAppData.
-  AppRoot := LowerCase(NormalizePath(ExpandConstant('{localappdata}\{#OrgLabel}\{#Alias}')));
+  // app constant is not initialized in InitializeWizard. Program root is the real LOCALAPPDATA path.
+  AppRoot := LowerCase(NormalizePath(GetRealProgramRoot('')));
   Home := LowerCase(NormalizePath(GetEnv('NVM_HOME')));
   InstallRoot := LowerCase(NormalizePath(GetInstallRoot('')));
 
