@@ -95,7 +95,7 @@ LicenseUrl: https://github.com/$Repository/blob/HEAD/LICENSE
 Copyright: Copyright (c) 2026 $publisher
 CopyrightUrl: https://github.com/$Repository/blob/HEAD/LICENSE
 ShortDescription: Node.js version manager for Windows.
-Moniker: nvm
+Moniker: nvm-windows
 Tags:
 - node
 - nodejs
